@@ -62,7 +62,7 @@ export function MetricCard({ view, lang, loading }: Props) {
             <ChangeLine label={tr.weekly_short} change={weekly} />
           </div>
 
-          {(view.range1m || view.range3m) && (
+          {(view.range1m || view.range3m || view.range52w) && (
             <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
               {view.range1m && (
                 <div>
@@ -77,6 +77,14 @@ export function MetricCard({ view, lang, loading }: Props) {
                   <span className="text-slate-400">{tr.high3m}</span>{' '}
                   <span className="font-mono text-slate-700 dark:text-slate-200">
                     {formatRange(view.range3m, view)}
+                  </span>
+                </div>
+              )}
+              {view.range52w && (
+                <div className="col-span-2">
+                  <span className="text-slate-400">{tr.high52w}</span>{' '}
+                  <span className="font-mono text-slate-700 dark:text-slate-200">
+                    {formatRange(view.range52w, view)}
                   </span>
                 </div>
               )}

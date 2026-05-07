@@ -15,6 +15,7 @@ export const dict = {
     weekly_short: '週',
     high1m: '1ヶ月 高/安',
     high3m: '3ヶ月 高/安',
+    high52w: '52週 高/安',
     range52w: '52週レンジ',
     status: {
       safe: '安全',
@@ -46,6 +47,7 @@ export const dict = {
     weekly_short: 'W',
     high1m: '1M H/L',
     high3m: '3M H/L',
+    high52w: '52W H/L',
     range52w: '52W Range',
     status: {
       safe: 'Safe',
