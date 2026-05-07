@@ -307,6 +307,22 @@ async function fetchFearGreed() {
   const fg = json?.fear_and_greed;
   if (!fg) throw new Error('CNN: missing fear_and_greed');
 
+  // 過去1年の日次履歴からレンジを計算
+  const history = (json?.fear_and_greed_historical?.data ?? [])
+    .map((d) => ({ t: Number(d.x), v: Number(d.y) }))
+    .filter((d) => Number.isFinite(d.t) && Number.isFinite(d.v))
+    .sort((a, b) => a.t - b.t);
+
+  const rangeOver = (days) => {
+    const since = Date.now() - days * 86400000;
+    const slice = history.filter((d) => d.t >= since);
+    if (slice.length === 0) return null;
+    return {
+      high: Math.max(...slice.map((d) => d.v)),
+      low: Math.min(...slice.map((d) => d.v)),
+    };
+  };
+
   return {
     current: Number(fg.score),
     rating: fg.rating, // "Extreme Fear" | "Fear" | "Neutral" | "Greed" | "Extreme Greed"
@@ -314,6 +330,15 @@ async function fetchFearGreed() {
     prevWeek: Number(fg.previous_1_week),
     prevMonth: Number(fg.previous_1_month),
     prevYear: Number(fg.previous_1_year),
+    range1m: rangeOver(30),
+    range3m: rangeOver(90),
+    range52w:
+      history.length > 0
+        ? {
+            high: Math.max(...history.map((d) => d.v)),
+            low: Math.min(...history.map((d) => d.v)),
+          }
+        : null,
     asOf: fg.timestamp ? new Date(fg.timestamp).toISOString() : new Date().toISOString(),
   };
 }
@@ -370,6 +395,16 @@ async function fetchNAAIM() {
   const last = data[data.length - 1];
   const prev = data[data.length - 2];
 
+  // レンジ計算 (週足ベース、1ヶ月=4週、3ヶ月=13週、52週)
+  const rangeOver = (weeks) => {
+    const slice = data.slice(-weeks);
+    if (slice.length === 0) return null;
+    return {
+      high: Math.max(...slice.map((d) => d.value)),
+      low: Math.min(...slice.map((d) => d.value)),
+    };
+  };
+
   return {
     current: last.value,
     prev: prev.value,
@@ -377,6 +412,9 @@ async function fetchNAAIM() {
       pointChange: last.value - prev.value,
       pctChange: ((last.value - prev.value) / prev.value) * 100,
     },
+    range1m: rangeOver(4),
+    range3m: rangeOver(13),
+    range52w: rangeOver(52),
     asOf: last.date,
     history: data.slice(-52), // 直近52週分
   };

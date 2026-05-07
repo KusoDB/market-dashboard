@@ -56,6 +56,9 @@ export interface FearGreedData {
   prevWeek: number;
   prevMonth: number;
   prevYear: number;
+  range1m: Range | null;
+  range3m: Range | null;
+  range52w: Range | null;
   asOf: string;
 }
 
@@ -63,6 +66,9 @@ export interface NaaimData {
   current: number;
   prev: number;
   weekly: Change;
+  range1m: Range | null;
+  range3m: Range | null;
+  range52w: Range | null;
   asOf: string;
   history: { date: string; value: number }[];
 }
