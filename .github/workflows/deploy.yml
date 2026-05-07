@@ -32,6 +32,8 @@ jobs:
 
       - name: Fetch latest market data
         run: npm run fetch:data
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
 
       - name: Build
         run: npm run build

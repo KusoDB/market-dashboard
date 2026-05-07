@@ -16,17 +16,48 @@ const UA =
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---------- 株価データ取得 (Stooq → Yahoo フォールバック) ----------
+// ---------- 株価データ取得 (TwelveData → Yahoo → Stooq フォールバック) ----------
 
-// GitHub Actions のIPは Yahoo に 429 で弾かれることが多いので、
-// 一次ソースとして Stooq (無料・API キー不要・CIで安定) を使い、
-// 失敗時のみ Yahoo にフォールバックする。
+// GitHub Actions のIPは Yahoo にも Stooq にも弾かれるため、
+// 無料 API キーで安定して引ける Twelve Data を一次ソースに使う。
+// 環境変数 TWELVEDATA_API_KEY を GitHub Secrets で渡す。
+const TD_KEY = process.env.TWELVEDATA_API_KEY;
+
 const QUOTE_TARGETS = [
-  { id: 'vix', symbol: '^VIX', stooq: '^vix' },
-  { id: 'ndx', symbol: '^NDX', stooq: '^ndx' },
-  { id: 'sox', symbol: '^SOX', stooq: '^sox' },
-  { id: 'xlk', symbol: 'XLK', stooq: 'xlk.us' },
+  { id: 'vix', symbol: '^VIX', td: 'VIX', stooq: '^vix' },
+  { id: 'ndx', symbol: '^NDX', td: 'NDX', stooq: '^ndx' },
+  { id: 'sox', symbol: '^SOX', td: 'SOX', stooq: '^sox' },
+  { id: 'xlk', symbol: 'XLK', td: 'XLK', stooq: 'xlk.us' },
 ];
+
+async function fetchTwelveDataSymbol(symbol, tdSym) {
+  if (!TD_KEY) throw new Error('TWELVEDATA_API_KEY not set');
+  const url =
+    `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(tdSym)}` +
+    `&interval=1day&outputsize=300&apikey=${TD_KEY}`;
+  const res = await fetch(url, { headers: { 'User-Agent': UA } });
+  if (!res.ok) throw new Error(`TwelveData ${symbol} HTTP ${res.status}`);
+  const json = await res.json();
+  if (json.status === 'error' || json.code >= 400)
+    throw new Error(`TwelveData ${symbol}: ${json.message ?? 'error'}`);
+  const values = json.values ?? [];
+  if (values.length < 2) throw new Error(`TwelveData ${symbol}: too few rows`);
+
+  // values は最新が先頭。古い順に詰め直す。
+  const candles = values
+    .map((v) => ({
+      t: new Date(v.datetime).getTime(),
+      o: Number(v.open),
+      h: Number(v.high),
+      l: Number(v.low),
+      c: Number(v.close),
+    }))
+    .filter((c) => Number.isFinite(c.c) && Number.isFinite(c.t))
+    .sort((a, b) => a.t - b.t);
+
+  if (candles.length < 2) throw new Error(`TwelveData ${symbol}: parse failed`);
+  return { symbol, candles };
+}
 
 async function fetchStooqSymbol(symbol, stooqSym) {
   const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(stooqSym)}&i=d`;
@@ -91,18 +122,27 @@ async function fetchYahooSymbol(symbol) {
   return { symbol, candles };
 }
 
-async function fetchSymbol(symbol, stooqSym) {
-  // 一次ソース: Stooq
+async function fetchSymbol(symbol, tdSym, stooqSym) {
+  const errs = [];
+  // 一次ソース: TwelveData (推奨)
+  try {
+    return await fetchTwelveDataSymbol(symbol, tdSym);
+  } catch (e) {
+    errs.push(`TD: ${e.message}`);
+  }
+  // フォールバック1: Yahoo
+  try {
+    return await fetchYahooSymbol(symbol);
+  } catch (e) {
+    errs.push(`Yahoo: ${e.message}`);
+  }
+  // フォールバック2: Stooq (現在は API キー要求あり)
   try {
     return await fetchStooqSymbol(symbol, stooqSym);
-  } catch (e1) {
-    // フォールバック: Yahoo
-    try {
-      return await fetchYahooSymbol(symbol);
-    } catch (e2) {
-      throw new Error(`Stooq: ${e1.message} / Yahoo: ${e2.message}`);
-    }
+  } catch (e) {
+    errs.push(`Stooq: ${e.message}`);
   }
+  throw new Error(errs.join(' / '));
 }
 
 function summarizeCandles(symbol, candles) {
@@ -185,9 +225,9 @@ function isoWeekKey(d) {
 
 async function fetchQuotes() {
   const out = {};
-  for (const { id, symbol, stooq } of QUOTE_TARGETS) {
+  for (const { id, symbol, td, stooq } of QUOTE_TARGETS) {
     try {
-      const { candles } = await fetchSymbol(symbol, stooq);
+      const { candles } = await fetchSymbol(symbol, td, stooq);
       out[id] = summarizeCandles(symbol, candles);
       console.log(`  ✓ ${id} (${symbol}) close=${out[id].current.toFixed(2)}`);
     } catch (e) {
