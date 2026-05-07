@@ -16,15 +16,51 @@ const UA =
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---------- Yahoo Finance ----------
+// ---------- 株価データ取得 (Stooq → Yahoo フォールバック) ----------
 
-// シーケンシャル取得 (350ms) で 429 を避ける
+// GitHub Actions のIPは Yahoo に 429 で弾かれることが多いので、
+// 一次ソースとして Stooq (無料・API キー不要・CIで安定) を使い、
+// 失敗時のみ Yahoo にフォールバックする。
 const QUOTE_TARGETS = [
-  { id: 'vix', symbol: '^VIX' },
-  { id: 'ndx', symbol: '^NDX' },
-  { id: 'sox', symbol: '^SOX' },
-  { id: 'xlk', symbol: 'XLK' },
+  { id: 'vix', symbol: '^VIX', stooq: '^vix' },
+  { id: 'ndx', symbol: '^NDX', stooq: '^ndx' },
+  { id: 'sox', symbol: '^SOX', stooq: '^sox' },
+  { id: 'xlk', symbol: 'XLK', stooq: 'xlk.us' },
 ];
+
+async function fetchStooqSymbol(symbol, stooqSym) {
+  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(stooqSym)}&i=d`;
+  const res = await fetch(url, { headers: { 'User-Agent': UA } });
+  if (!res.ok) throw new Error(`Stooq ${symbol} HTTP ${res.status}`);
+  const csv = (await res.text()).trim();
+  if (csv.startsWith('<') || csv.length < 50)
+    throw new Error(`Stooq ${symbol}: invalid response`);
+
+  // CSV: Date,Open,High,Low,Close,Volume
+  const lines = csv.split(/\r?\n/);
+  const header = lines[0].split(',');
+  if (header[0]?.trim() !== 'Date')
+    throw new Error(`Stooq ${symbol}: unexpected header ${header.join(',')}`);
+
+  const candles = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = lines[i].split(',');
+    if (cells.length < 5) continue;
+    const t = new Date(cells[0]).getTime();
+    const o = Number(cells[1]);
+    const h = Number(cells[2]);
+    const l = Number(cells[3]);
+    const c = Number(cells[4]);
+    if (!Number.isFinite(c) || !Number.isFinite(t)) continue;
+    candles.push({ t, o, h, l, c });
+  }
+  if (candles.length < 2) throw new Error(`Stooq ${symbol}: too few rows`);
+
+  // 直近 ~14ヶ月分に絞る (52週レンジは確保しつつ容量削減)
+  const cutoff = Date.now() - 430 * 24 * 60 * 60 * 1000;
+  const recent = candles.filter((c) => c.t >= cutoff);
+  return { symbol, candles: recent.length >= 60 ? recent : candles };
+}
 
 async function fetchYahooSymbol(symbol) {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
@@ -53,6 +89,20 @@ async function fetchYahooSymbol(symbol) {
 
   if (candles.length < 2) throw new Error(`Yahoo ${symbol}: too few candles`);
   return { symbol, candles };
+}
+
+async function fetchSymbol(symbol, stooqSym) {
+  // 一次ソース: Stooq
+  try {
+    return await fetchStooqSymbol(symbol, stooqSym);
+  } catch (e1) {
+    // フォールバック: Yahoo
+    try {
+      return await fetchYahooSymbol(symbol);
+    } catch (e2) {
+      throw new Error(`Stooq: ${e1.message} / Yahoo: ${e2.message}`);
+    }
+  }
 }
 
 function summarizeCandles(symbol, candles) {
@@ -135,9 +185,9 @@ function isoWeekKey(d) {
 
 async function fetchQuotes() {
   const out = {};
-  for (const { id, symbol } of QUOTE_TARGETS) {
+  for (const { id, symbol, stooq } of QUOTE_TARGETS) {
     try {
-      const { candles } = await fetchYahooSymbol(symbol);
+      const { candles } = await fetchSymbol(symbol, stooq);
       out[id] = summarizeCandles(symbol, candles);
       console.log(`  ✓ ${id} (${symbol}) close=${out[id].current.toFixed(2)}`);
     } catch (e) {
