@@ -16,19 +16,66 @@ const UA =
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---------- 株価データ取得 (TwelveData → Yahoo → Stooq フォールバック) ----------
-
-// GitHub Actions のIPは Yahoo にも Stooq にも弾かれるため、
-// 無料 API キーで安定して引ける Twelve Data を一次ソースに使う。
-// 環境変数 TWELVEDATA_API_KEY を GitHub Secrets で渡す。
+// ---------- 株価データ取得 ----------
+// 各ターゲットに複数のデータソースを優先順位付きで持たせ、
+// 順次トライしてフォールバックする方式。
+//
+// データソースの種類:
+//   - fred:<series>  FRED CSV (無料・無認証・極めて安定。Close のみ)
+//   - td:<symbol>    Twelve Data (要 API キー、無料枠は US ETF のみ)
+//   - yahoo:<symbol> Yahoo Finance v8 (CIだと 429 になりがち。最終フォールバック)
 const TD_KEY = process.env.TWELVEDATA_API_KEY;
 
 const QUOTE_TARGETS = [
-  { id: 'vix', symbol: '^VIX', td: 'VIX', stooq: '^vix' },
-  { id: 'ndx', symbol: '^NDX', td: 'NDX', stooq: '^ndx' },
-  { id: 'sox', symbol: '^SOX', td: 'SOX', stooq: '^sox' },
-  { id: 'xlk', symbol: 'XLK', td: 'XLK', stooq: 'xlk.us' },
+  // ---- センチメント (指数) ----
+  // VIX は FRED が CIで一番安定 (Yahoo 429・TD 無料外)
+  { id: 'vix',  label: 'VIX',  sources: ['fred:VIXCLS', 'yahoo:^VIX'] },
+
+  // ---- 指数代理 / セクター ETF ----
+  { id: 'qqq',  label: 'QQQ',  sources: ['td:QQQ',  'yahoo:QQQ']  },
+  { id: 'soxx', label: 'SOXX', sources: ['td:SOXX', 'yahoo:SOXX'] },
+  { id: 'xlk',  label: 'XLK',  sources: ['td:XLK',  'yahoo:XLK']  },
+
+  // ---- 3x レバレッジ ETF ----
+  { id: 'tqqq', label: 'TQQQ', sources: ['td:TQQQ', 'yahoo:TQQQ'] },
+  { id: 'soxl', label: 'SOXL', sources: ['td:SOXL', 'yahoo:SOXL'] },
+  { id: 'tecl', label: 'TECL', sources: ['td:TECL', 'yahoo:TECL'] },
 ];
+
+async function fetchFromSource(source) {
+  const idx = source.indexOf(':');
+  const kind = source.slice(0, idx);
+  const sym = source.slice(idx + 1);
+  if (kind === 'td')    return fetchTwelveDataSymbol(sym, sym);
+  if (kind === 'yahoo') return fetchYahooSymbol(sym);
+  if (kind === 'fred')  return fetchFredSeries(sym);
+  throw new Error(`unknown source: ${source}`);
+}
+
+// FRED は CSV (Date,Value) を返す。Close のみだが summarizeCandles は h/l 欠落でも動く。
+async function fetchFredSeries(seriesId) {
+  const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(seriesId)}`;
+  const res = await fetch(url, { headers: { 'User-Agent': UA } });
+  if (!res.ok) throw new Error(`FRED ${seriesId} HTTP ${res.status}`);
+  const csv = (await res.text()).trim();
+  const lines = csv.split(/\r?\n/);
+  if (lines.length < 30) throw new Error(`FRED ${seriesId}: too few lines`);
+
+  const candles = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = lines[i].split(',');
+    if (cells.length < 2) continue;
+    const date = cells[0]?.trim();
+    const val = cells[1]?.trim();
+    if (!date || !val || val === '.') continue; // FRED は欠損を '.' で表す
+    const t = new Date(date).getTime();
+    const c = Number(val);
+    if (!Number.isFinite(t) || !Number.isFinite(c)) continue;
+    candles.push({ t, o: null, h: null, l: null, c });
+  }
+  if (candles.length < 30) throw new Error(`FRED ${seriesId}: too few valid rows`);
+  return { symbol: seriesId, candles };
+}
 
 async function fetchTwelveDataSymbol(symbol, tdSym) {
   if (!TD_KEY) throw new Error('TWELVEDATA_API_KEY not set');
@@ -57,40 +104,6 @@ async function fetchTwelveDataSymbol(symbol, tdSym) {
 
   if (candles.length < 2) throw new Error(`TwelveData ${symbol}: parse failed`);
   return { symbol, candles };
-}
-
-async function fetchStooqSymbol(symbol, stooqSym) {
-  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(stooqSym)}&i=d`;
-  const res = await fetch(url, { headers: { 'User-Agent': UA } });
-  if (!res.ok) throw new Error(`Stooq ${symbol} HTTP ${res.status}`);
-  const csv = (await res.text()).trim();
-  if (csv.startsWith('<') || csv.length < 50)
-    throw new Error(`Stooq ${symbol}: invalid response`);
-
-  // CSV: Date,Open,High,Low,Close,Volume
-  const lines = csv.split(/\r?\n/);
-  const header = lines[0].split(',');
-  if (header[0]?.trim() !== 'Date')
-    throw new Error(`Stooq ${symbol}: unexpected header ${header.join(',')}`);
-
-  const candles = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cells = lines[i].split(',');
-    if (cells.length < 5) continue;
-    const t = new Date(cells[0]).getTime();
-    const o = Number(cells[1]);
-    const h = Number(cells[2]);
-    const l = Number(cells[3]);
-    const c = Number(cells[4]);
-    if (!Number.isFinite(c) || !Number.isFinite(t)) continue;
-    candles.push({ t, o, h, l, c });
-  }
-  if (candles.length < 2) throw new Error(`Stooq ${symbol}: too few rows`);
-
-  // 直近 ~14ヶ月分に絞る (52週レンジは確保しつつ容量削減)
-  const cutoff = Date.now() - 430 * 24 * 60 * 60 * 1000;
-  const recent = candles.filter((c) => c.t >= cutoff);
-  return { symbol, candles: recent.length >= 60 ? recent : candles };
 }
 
 async function fetchYahooSymbol(symbol) {
@@ -122,28 +135,6 @@ async function fetchYahooSymbol(symbol) {
   return { symbol, candles };
 }
 
-async function fetchSymbol(symbol, tdSym, stooqSym) {
-  const errs = [];
-  // 一次ソース: TwelveData (推奨)
-  try {
-    return await fetchTwelveDataSymbol(symbol, tdSym);
-  } catch (e) {
-    errs.push(`TD: ${e.message}`);
-  }
-  // フォールバック1: Yahoo
-  try {
-    return await fetchYahooSymbol(symbol);
-  } catch (e) {
-    errs.push(`Yahoo: ${e.message}`);
-  }
-  // フォールバック2: Stooq (現在は API キー要求あり)
-  try {
-    return await fetchStooqSymbol(symbol, stooqSym);
-  } catch (e) {
-    errs.push(`Stooq: ${e.message}`);
-  }
-  throw new Error(errs.join(' / '));
-}
 
 function summarizeCandles(symbol, candles) {
   const closes = candles.map((c) => c.c);
@@ -225,14 +216,26 @@ function isoWeekKey(d) {
 
 async function fetchQuotes() {
   const out = {};
-  for (const { id, symbol, td, stooq } of QUOTE_TARGETS) {
-    try {
-      const { candles } = await fetchSymbol(symbol, td, stooq);
-      out[id] = summarizeCandles(symbol, candles);
-      console.log(`  ✓ ${id} (${symbol}) close=${out[id].current.toFixed(2)}`);
-    } catch (e) {
-      console.error(`  ✗ ${id} (${symbol}): ${e.message}`);
-      out[id] = { symbol, error: e.message };
+  for (const target of QUOTE_TARGETS) {
+    const errs = [];
+    let summary = null;
+    for (const src of target.sources) {
+      try {
+        const { candles } = await fetchFromSource(src);
+        summary = summarizeCandles(target.label, candles);
+        break;
+      } catch (e) {
+        errs.push(`${src}: ${e.message}`);
+      }
+    }
+    if (summary) {
+      out[target.id] = summary;
+      console.log(
+        `  ✓ ${target.id} (${target.label}) close=${summary.current.toFixed(2)}`,
+      );
+    } else {
+      out[target.id] = { symbol: target.label, error: errs.join(' / ') };
+      console.error(`  ✗ ${target.id} (${target.label}): ${errs.join(' / ')}`);
     }
     await sleep(350);
   }

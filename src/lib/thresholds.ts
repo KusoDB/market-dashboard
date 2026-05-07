@@ -26,9 +26,12 @@ export function computeStatus(
       if (value <= 100) return 'caution';
       return 'danger';
 
-    case 'ndx':
-    case 'sox':
-    case 'xlk': {
+    case 'qqq':
+    case 'soxx':
+    case 'xlk':
+    case 'tqqq':
+    case 'soxl':
+    case 'tecl': {
       if (!range52w) return 'neutral';
       const span = range52w.high - range52w.low;
       if (span <= 0) return 'neutral';

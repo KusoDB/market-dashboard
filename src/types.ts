@@ -10,7 +10,18 @@ export type Status =
   | 'high-zone'
   | 'low-zone';
 
-export type MetricId = 'vix' | 'fear-greed' | 'naaim' | 'ndx' | 'sox' | 'xlk';
+export type MetricId =
+  | 'vix'
+  | 'fear-greed'
+  | 'naaim'
+  | 'qqq'
+  | 'soxx'
+  | 'xlk'
+  | 'tqqq'
+  | 'soxl'
+  | 'tecl';
+
+export type IndexId = 'qqq' | 'soxx' | 'xlk' | 'tqqq' | 'soxl' | 'tecl';
 
 export type Frequency = 'daily' | 'weekly';
 

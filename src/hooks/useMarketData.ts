@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type {
   FearGreedData,
+  IndexId,
   MetaData,
   MetricView,
   NaaimData,
@@ -9,7 +10,7 @@ import type {
 import { computeStatus } from '../lib/thresholds';
 
 const SENTIMENT_IDS = ['vix', 'fear-greed', 'naaim'] as const;
-const INDEX_IDS = ['ndx', 'sox', 'xlk'] as const;
+const INDEX_IDS: IndexId[] = ['qqq', 'soxx', 'xlk', 'tqqq', 'soxl', 'tecl'];
 
 interface RawData {
   quotes?: Record<string, QuoteData>;
@@ -152,10 +153,7 @@ function buildSentimentView(
   };
 }
 
-function buildIndexView(
-  id: 'ndx' | 'sox' | 'xlk',
-  raw: RawData,
-): MetricView {
+function buildIndexView(id: IndexId, raw: RawData): MetricView {
   const q = raw.quotes?.[id];
   const label = id.toUpperCase();
   if (!q || q.error) return errorView(id, label, raw.errors.quotes ?? q?.error);

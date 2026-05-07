@@ -7,9 +7,12 @@ export function formatValue(v: number, view: MetricView): string {
       return v.toFixed(2);
     case 'fear-greed':
       return v.toFixed(1);
-    case 'ndx':
-    case 'sox':
+    case 'qqq':
+    case 'soxx':
     case 'xlk':
+    case 'tqqq':
+    case 'soxl':
+    case 'tecl':
       return v.toLocaleString('en-US', {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
