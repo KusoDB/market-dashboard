@@ -28,8 +28,8 @@ const TD_KEY = process.env.TWELVEDATA_API_KEY;
 
 const QUOTE_TARGETS = [
   // ---- センチメント (指数) ----
-  // VIX は FRED が CIで一番安定 (Yahoo 429・TD 無料外)
-  { id: 'vix',  label: 'VIX',  sources: ['fred:VIXCLS', 'yahoo:^VIX'] },
+  // VIX: CBOE 公式 CSV が一番安定。FRED と Yahoo を後段に。
+  { id: 'vix',  label: 'VIX',  sources: ['cboe:VIX', 'fred:VIXCLS', 'yahoo:^VIX'] },
 
   // ---- 指数代理 / セクター ETF ----
   { id: 'qqq',  label: 'QQQ',  sources: ['td:QQQ',  'yahoo:QQQ']  },
@@ -49,18 +49,70 @@ async function fetchFromSource(source) {
   if (kind === 'td')    return fetchTwelveDataSymbol(sym, sym);
   if (kind === 'yahoo') return fetchYahooSymbol(sym);
   if (kind === 'fred')  return fetchFredSeries(sym);
+  if (kind === 'cboe')  return fetchCboeVixHistory();
   throw new Error(`unknown source: ${source}`);
+}
+
+// CBOE 公式の VIX 過去データ CSV (CDN 配信、無料・無認証)
+async function fetchCboeVixHistory() {
+  const url =
+    'https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv';
+  const res = await fetch(url, {
+    headers: { 'User-Agent': UA, Accept: 'text/csv,*/*;q=0.5' },
+  });
+  if (!res.ok) throw new Error(`CBOE HTTP ${res.status}`);
+  const csv = (await res.text()).trim();
+  const lines = csv.split(/\r?\n/);
+  if (lines.length < 100) throw new Error('CBOE VIX: too few lines');
+
+  // CSV: DATE,OPEN,HIGH,LOW,CLOSE
+  const candles = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = lines[i].split(',');
+    if (cells.length < 5) continue;
+    const t = new Date(cells[0]).getTime();
+    const o = Number(cells[1]);
+    const h = Number(cells[2]);
+    const l = Number(cells[3]);
+    const c = Number(cells[4]);
+    if (!Number.isFinite(t) || !Number.isFinite(c)) continue;
+    candles.push({ t, o, h, l, c });
+  }
+  if (candles.length < 60) throw new Error('CBOE VIX: parse failed');
+
+  // 直近 ~14ヶ月分に絞る
+  const cutoff = Date.now() - 430 * 24 * 60 * 60 * 1000;
+  const recent = candles.filter((c) => c.t >= cutoff);
+  return { symbol: 'VIX', candles: recent.length >= 60 ? recent : candles };
 }
 
 // FRED は CSV (Date,Value) を返す。Close のみだが summarizeCandles は h/l 欠落でも動く。
 async function fetchFredSeries(seriesId) {
-  const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(seriesId)}`;
-  const res = await fetch(url, { headers: { 'User-Agent': UA } });
-  if (!res.ok) throw new Error(`FRED ${seriesId} HTTP ${res.status}`);
-  const csv = (await res.text()).trim();
+  const urls = [
+    `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(seriesId)}`,
+    `https://fred.stlouisfed.org/series/${encodeURIComponent(seriesId)}/downloaddata/${encodeURIComponent(seriesId)}.csv`,
+  ];
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': UA, Accept: 'text/csv,*/*;q=0.5' },
+        redirect: 'follow',
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const csv = (await res.text()).trim();
+      return parseFredCsv(seriesId, csv);
+    } catch (e) {
+      const cause = e?.cause?.code ? ` (${e.cause.code})` : '';
+      lastErr = new Error(`${e.message}${cause}`);
+    }
+  }
+  throw new Error(`FRED ${seriesId}: ${lastErr?.message ?? 'unknown'}`);
+}
+
+function parseFredCsv(seriesId, csv) {
   const lines = csv.split(/\r?\n/);
   if (lines.length < 30) throw new Error(`FRED ${seriesId}: too few lines`);
-
   const candles = [];
   for (let i = 1; i < lines.length; i++) {
     const cells = lines[i].split(',');
