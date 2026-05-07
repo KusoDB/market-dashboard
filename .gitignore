@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.DS_Store
+.vscode/
+.idea/
+*.log
+.env
+.env.local
+
+# TypeScript / Vite のビルドキャッシュ
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+vite.config.*.timestamp-*.mjs
+
+# 生成物 (1日1回のActionsで再生成されるため、コミットしない方針)
+# 必要ならコミットする運用に切り替えてもよい
+public/data/*.json
